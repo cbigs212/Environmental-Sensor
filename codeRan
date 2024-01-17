@@ -1,0 +1,327 @@
+
+
+/* Environmental_Sensor_Carly.ino by Carly Bigelow 
+ *  5/2023
+ *  This code works as an environmental sensor that can track data 
+ *  such as air and water temperature in C, K, and F. 
+ *  It can record humidity (%), battery voltage (V), and illuminance (lux) as well.
+ * 
+*/
+/*
+   DHT11_Odom.ino
+   YourDuino.com Example Software Sketch
+   DHT11 Humidity and Temperature Sensor test
+   Credits: Rob Tillaart
+   http://arduino-direct.com/sunshop/index.php?l=product_detail&p=162
+   terry@yourduino.com
+   Modified by Brian Patton 6/29/2020
+   Modified by Chris Odom 10.24.2020, 4.5.23 added DIY circuit board information
+   (if you do not have the pre-fabricated circuit board)
+   Modified by Carly Bigelow 5/25/2023
+*/
+
+// include for LCD
+#include <LiquidCrystal_I2C.h>
+
+// includes for the SD card
+#include <SD.h>
+#include <SPI.h>
+
+//includes for RTC
+#include <TimeLib.h>
+#include <Wire.h>
+#include <DS1307RTC.h>  // a basic DS1307 library that returns time as a time_t
+
+//include for the DHT11
+#include <dht11.h>
+
+//declaring objects
+dht11 DHT11;
+
+// general globals
+int onboardLED = 13; // LED to indicate when SD is being written to.
+
+//global for VDB + photoresistor
+int lightPin = A0; // Pin for the VDB and photoresistor for collecting light data
+
+//global for thermistor
+int thermistorPin = A1; // thermistor pin for collecting water temperatures
+
+//globals for DHT11
+const int DHT11pin = A6; // pin for the DHT11 (works with any), which records air temperature and humidity
+int myDelay = 2000;
+
+//globals for voltage
+const byte VDBpin = A10; // connecting the battery-level sensor to pin A0 which will record voltage
+
+//globals for RTC
+tmElements_t tm; // RTC time data type; needed for Teensy Time and Date Method
+char timeDateBuffer[50]; // Buffer array for storing date/time data to be printed using snprintf()
+
+//globals for SD Card
+const int chipSelect = BUILTIN_SDCARD;
+// globals for file naming
+char dataFileName[13];            // Buffer array for SD Card filename, which is set in setup() function. CANNOT be long (8.3)!  Only 8 characters before the period!!!
+String fileNamePrefix = "04280815";      // name for the file
+// global for data collection
+int secondsBetweenDataPoints = 5;        // 15s = 4/min = 240/hr = 5760/day
+
+
+// 16x2.  Address = 0x27.   Name = lcd.
+// This is for a 16 chars x 2 line display
+// Usual LCD address 0x27. 0x3F is another common address (e.g. LAFVIN).
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+
+void setup() {
+  Serial.begin(9600); // Open serial communications and wait for port to open:
+  pinMode(lightPin, INPUT); // putting the light pin in the proper mode
+  pinMode(onboardLED, OUTPUT); // putting the onboard pin in the proper mode
+  pinMode (VDBpin, INPUT); // putting the voltage pin in the proper mode
+  pinMode(thermistorPin, INPUT); // putting the thermistor pin in the proper mode
+
+  // to make sure the DS3231 RTC Module is connected, powered, and operating properly:
+  setSyncProvider(RTC.get);   // the function to get the time from the RTC
+  if (timeStatus() != timeSet) {
+    while (true) {
+      Serial.println("Unable to sync with the RTC");
+      delay(1000);
+    }
+  }
+  else {
+    Serial.println("RTC has set the system time");
+  }
+
+
+  lcd.init();                      // initialize the lcd
+  // Print a message to the LCD.
+  lcd.backlight();
+  lcd.setCursor(2, 0);    // col, row
+  lcd.print("Environmental Sensor");
+  lcd.setCursor(2, 1);
+  lcd.print("By Carly B.");
+  delay(3000);
+
+  // ODOM edited code:
+  // ******************** SD Card setup: **************************
+  Serial.print("Initializing SD card...");
+
+  // see if the card is present and can be initialized:
+  if (!SD.begin(chipSelect)) {
+    Serial.println("Card failed, or not present");
+    // don't do anything more:
+    return;
+  }
+  Serial.println("card initialized.");
+
+  if (RTC.read(tm)) {
+    // snfprint printing
+    snprintf(dataFileName, 13, "%02d%02d%02d%02d.txt", tm.Month, tm.Day, tm.Hour, tm.Minute);
+    Serial.print("dataFileName = ");
+    Serial.println(dataFileName);
+    snprintf(timeDateBuffer, 50, "%02d/%02d/%04d% 02d:%02d:%02d", tm.Month, tm.Day, tmYearToCalendar(tm.Year), tm.Hour, tm.Minute, tm.Second);            // ODOM
+    Serial.print("timeDateBuffer = ");     // ODOM
+    Serial.println(timeDateBuffer);     // ODOM
+  }
+  else {
+    if (RTC.chipPresent()) {
+      Serial.println("The DS3231 has stopped.  Please run the SetTime");
+      Serial.println("example to initialize the time and begin running.");
+      Serial.println();
+    } else {
+      Serial.println("DS3231 read error!  Please check the circuitry.");
+      Serial.println();
+    }
+    delay(9000);
+  }
+
+  digitalWrite(onboardLED, HIGH);        // turn on LED while data is being written to the SD Card
+
+  // write initialization message to the SD card:
+  //  String initString = "Card initialized at " + String(millis()) + "ms";       // ODOM commented-out this line and added the following line
+  String initString = "Card initialized at " + String(timeDateBuffer);        // ODOM
+
+  // open the file.
+  File dataFile = SD.open(dataFileName, FILE_WRITE);      // file name cannot be long (8.3)!  Data is APPENDED to file!
+
+  // if the file is available, write to it:
+  if (dataFile) {
+    dataFile.println(initString);     // print/save to SD card
+    dataFile.close();                 // always close the SD file immediately after writing data to it!!!
+    // print to the serial port too:
+    Serial.println(initString);       // print to Serial Monitor
+  }
+  // if the file isn't open, pop up an error:
+  else {
+    Serial.println("Error opening file on SD Card! (setup)");
+  }
+  digitalWrite(onboardLED, LOW);        // turn off LED
+}
+
+void loop() {
+
+  if (RTC.read(tm)) {
+
+    // snprintf printing:
+    snprintf(timeDateBuffer, 50, "%02d/%02d/%04d% 02d:%02d:%02d", tm.Month, tm.Day, tmYearToCalendar(tm.Year), tm.Hour, tm.Minute, tm.Second); // using a dynamic file name that titles it by the current date/time
+  }
+  else {
+    if (RTC.chipPresent()) {
+      Serial.println("The DS3231 has stopped.  Please run the SetTime");
+      Serial.println("example to initialize the time and begin running.");
+      Serial.println();
+    } else {
+      Serial.println("DS3231 read error!  Please check the circuitry.");
+      Serial.println();
+    }
+    delay(9000);
+  }
+
+  Serial.println("Print the time...");
+
+  lcd.clear();
+
+  // make a string for assembling the data to log:
+  String dataString = "";     //  null string
+
+  // read the time (millis) and the light sensor and append to the string (comma delimited!):
+  int photoOut = analogRead(lightPin); // reading the light pin
+  float illuminance = lux(photoOut); // convert sensor reading to lux
+
+  // read thermistor
+  int thermistorRaw = analogRead(thermistorPin); // digital reading
+  float thermistorV = DAC(thermistorRaw); // converts digital reading to voltage
+  float thermistorRes = calcRv(thermistorV); //converts voltage to resistance
+
+  float tKel = calcTempK(thermistorRes); //using resistance calculation to find temp in Kelvins
+  float tCel = calcTempC(tKel); // using kelvins to celcius calculation to find temp in Celcius
+  float tFar = calcTempF(tCel); // using celcius to farenheit calculation to find temp in farenheit
+
+  // grab the voltage from the robot's battery pack:
+  float battVolt = batteryLevel (VDBpin);
+
+  //variables for holding the combined whole and decimal for temp and humidity (DHT11)
+  float tF;
+  float humid;
+
+  //verifying the dht11 sensor works
+  int chk = DHT11.read(DHT11pin);   // we must read the sensor first!  use chk as a check to ensure sensor is working
+  if (chk == 0) {
+    //    Serial.println("\n");         // Everything looks good
+    //    Serial.println("Read sensor: OK ");
+    // read and print the DHT11 data (see DHT11BPATTON.ino for dew point calculations.)
+    humid = DHT11.humidity;     // grab humidity
+    tF = DHT11.temperatureF;    // grab temperature in Celcius
+
+    // ODOM commented the delay below.  one delay at the end is all you need
+    // delay(myDelay);    // delay at least 2-3 seconds (2000-3000 millis)! if you read the DTH11 too fast, you'll get errors
+  }
+  else {
+    Serial.println("Something went wrong with DHT11 board.");
+    // chk=-1 means Checksum error.  chk=-2 means Time-Out error
+    delay(1000);
+  }
+
+  // printing the data string data to the LCD monitor to make it more user friendly and to let us kow the code is running / collecting data
+  lcd.setCursor(0, 0);    // col, row
+  lcd.print((tm.Hour) + String(":") + (tm.Minute));
+  lcd.setCursor(0, 1);    // col, row
+  lcd.print(tm.Second);
+  lcd.setCursor(5, 0);    // col, row
+  lcd.print(int(illuminance) + String("lux"));
+  lcd.setCursor(13, 0);    // col, row
+  lcd.print(int(battVolt) + String ("V"));
+  lcd.setCursor(3, 1);    // col, row
+  lcd.print(int(tF) + String ("F"));
+  lcd.setCursor(8, 1);    // col, row
+  lcd.print(int(humid) + String ("%"));
+  lcd.setCursor(13, 1);    // col, row
+  lcd.print(int(tFar) + String("F"));
+  delay(1000);
+
+  // printing all points of data to serial monitor/sd card in one line
+  dataString = String(timeDateBuffer) + ", " + String(illuminance) + ", " +
+               String (battVolt) + ", " + String(tF, 2) + ", " + String(humid, 2) + ", " + String(tFar);
+
+
+  digitalWrite(onboardLED, HIGH);        // turn on LED while data is being written to the SD Card
+
+  // open the file.
+  File dataFile = SD.open(dataFileName, FILE_WRITE);      // file name cannot be long
+
+  // if the file is available, write to it:
+  if (dataFile) {
+    dataFile.println(dataString);     // print/save to SD card
+    dataFile.close();                 // always close the SD file immediately after writing data to it
+    // print to the serial port too:
+    Serial.println(dataString);       // print to Serial Monitor
+  }
+  // if the file isn't open, pop up an error:
+  else {
+    Serial.println("Error opening file on SD Card! (loop)");
+  }
+  digitalWrite(onboardLED, LOW);        // turn off LED
+
+  // wait between readings
+  delay(secondsBetweenDataPoints * 1000);     // convert seconds to milliseconds
+}
+
+float batteryLevel (int pinNum) {
+  float R1 = 9830; //the R1 value for voltage divider:
+  float R2 = 4594; //the R2 value for voltage divider:
+  int rawVDBdata = analogRead (VDBpin); // digital reading from the VDB
+  float Vout = DAC (rawVDBdata); // convert the raw digital reading to volts
+  float Vin = ((R1 + R2) / R2) * Vout; // using 21.11 equation to find battery voltage
+  return Vin;
+}
+
+// DAC () is a function that converts a 10-bit digital sensor value into a voltage
+float DAC (int digitalValue) {
+  float analogValue = digitalValue * 3.3 / 1023.0; // 1023 because 10 bit resolution
+  return analogValue;
+}
+
+float calcRv (float thermistorV) {
+  const float Rf = 9900;
+  const float VTin = 5.00;
+
+  float Rv = (thermistorV / (VTin - thermistorV) ) * Rf;
+  return Rv;
+}
+
+float calcTempK (float R) {
+  const float R0 = 10000; // thermistor's reference resitance
+  const float T0 = 298.15; // thermistor's reference temperature
+  const float B = 4038; // thermistor's beta constant (in Kelvin)
+  float inversetKel = (1.0 / T0) + (1.0 / B) * log(R / R0);
+  float tKel = 1.0 / inversetKel; // thermistor's temp in kelvins
+  return tKel;
+}
+
+float calcTempC (float tKel) { // converting kelvins to celcius
+  float tCel = tKel - 273.15;
+  return tCel;
+}
+
+float calcTempF (float tCel) //converting celcius to farenheit
+{
+  float tFar = (9.0 / 5.0) * tCel + 32.0; // equation finding farenheit temperature
+  return tFar;
+}
+
+// function for RTC code
+void print2digits(int number) 
+{
+  if (number >= 0 && number < 10) 
+  {
+    Serial.write('0');
+  }
+  Serial.print(number);
+}
+
+// uses equation to convert digital data to lux
+float lux (int photoOut) 
+{
+  float Ev = 2.826e6 * pow(photoOut, -1.850); // the output is in lux
+  return Ev;
+}
